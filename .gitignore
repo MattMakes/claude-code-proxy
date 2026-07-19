@@ -2,3 +2,4 @@ logs/
 research/
 node_modules/
 .DS_Store
+.playwright-mcp/
