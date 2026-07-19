@@ -32,6 +32,7 @@ import { loadPrices } from "./lib/cost.mjs";
 import { extractSessionId, sessionState } from "./lib/session.mjs";
 import { createLedger } from "./lib/ledger.mjs";
 import { optimize, commitForward } from "./lib/optimize.mjs";
+import { createSseHub } from "./lib/sse.mjs";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const UPSTREAM = "api.anthropic.com";
@@ -44,6 +45,7 @@ const BOOT_ID = Math.random().toString(36).slice(2, 8);
 const PRICES = loadPrices();
 const LEDGER = createLedger({ dir: LOG_DIR, prices: PRICES });
 const replayed = LEDGER.replay();
+const HUB = createSseHub();
 
 /** Rough token estimate for display. Real input tokens come from the response
  * usage; this is only for ranking the request before the reply arrives. */
@@ -287,12 +289,17 @@ function renderMarkdown(c, audit, responseMd) {
 
 function handle(req, res) {
   const reqPath = req.url ?? "/";
+  // Must precede the /stats check — "/stats/stream".startsWith("/stats") is true.
+  if (req.method === "GET" && reqPath.startsWith("/stats/stream")) {
+    HUB.handle(res);
+    return;
+  }
   if (req.method === "GET" && reqPath.startsWith("/stats")) {
     if (reqPath.includes("format=jsonl")) {
       res.writeHead(200, { "content-type": "application/x-ndjson" });
       fs.existsSync(LEDGER.file) ? fs.createReadStream(LEDGER.file).pipe(res) : res.end();
     } else {
-      res.writeHead(200, { "content-type": "application/json" });
+      res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
       res.end(JSON.stringify({ optimize: OPTIMIZE, ...LEDGER.stats() }));
     }
     return;
@@ -373,6 +380,7 @@ function handle(req, res) {
                   tools: estTokens(audit.toolsBytes),
                   messages: estTok(JSON.stringify(reqJson.messages ?? [])),
                   tool_defs: audit.toolRows.slice(0, 15).map((r) => ({ name: r.name, tokens: r.tokens })) } });
+              HUB.broadcast({ optimize: OPTIMIZE, ...LEDGER.stats() });
             }
           } catch (err) {
             console.error(`[agent-proxy] could not render (non-JSON body?): ${err.message}`);
