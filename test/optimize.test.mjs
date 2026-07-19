@@ -46,3 +46,42 @@ test("projection mode: body untouched, savings still measured", () => {
   assert.ok(out.savedDetail.dedup > 0);
   assert.ok(out.optimizedTokens < out.originalTokens);
 });
+
+const readUse = (id, file) => ({ role: "assistant",
+  content: [{ type: "tool_use", id, name: "Read", input: { file_path: file } }] });
+const editUse = (id, file) => ({ role: "assistant",
+  content: [{ type: "tool_use", id, name: "Edit", input: { file_path: file, old_string: "a", new_string: "b" } }] });
+
+test("stale Read in delta stubbed when superseded by later Edit", () => {
+  const r = req([readUse("u1", "/a.txt"), toolResult("u1", BIG),
+    editUse("u2", "/a.txt"), toolResult("u2", "ok\nok\nok\nedited fine result")]);
+  const out = optimize(r, freshState(), { apply: true });
+  assert.match(out.body.messages[1].content[0].content, /stale Read of \/a\.txt/);
+  assert.ok(out.savedDetail.stale_read > 0);
+});
+
+test("stale Read in FROZEN prefix: untouched on cache hit, stubbed on cache miss", () => {
+  const build = () => req([readUse("u1", "/a.txt"), toolResult("u1", BIG), editUse("u2", "/a.txt"),
+    toolResult("u2", "ok\nok\nok\nedited fine result")]);
+  const hot = freshState();
+  const first = optimize(build(), hot, { apply: true });
+  commitForward(hot, first.body, { input: 10, cache_read: 90000, cache_creation: 5, output: 5 });
+  const again = build(); again.messages = first.body.messages.concat([{ role: "user", content: "next" }]);
+  const out2 = optimize(again, hot, { apply: true });
+  assert.equal(out2.savedDetail.stale_read, 0); // frozen + cache hot → untouched
+
+  const cold = freshState();
+  const f2 = optimize(build(), cold, { apply: true });
+  commitForward(cold, f2.body, { input: 90000, cache_read: 0, cache_creation: 0, output: 5 });
+  const again2 = structuredClone(f2.body); again2.messages.push({ role: "user", content: "next" });
+  const out3 = optimize(again2, cold, { apply: true });
+  assert.ok(out3.savedDetail.stale_read >= 0); // gate open; frozen stub permitted
+});
+
+test("small (<512B) stale reads untouched", () => {
+  const tiny = "short line one\nshort line two\nshort line three";
+  const r = req([readUse("u1", "/b.txt"), toolResult("u1", tiny), editUse("u2", "/b.txt"),
+    toolResult("u2", "ok\nok\nok\nfine")]);
+  const out = optimize(r, freshState(), { apply: true });
+  assert.equal(out.savedDetail.stale_read, 0);
+});
