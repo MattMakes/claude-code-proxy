@@ -2,14 +2,21 @@
  * agent-proxy — see what Claude Code actually sends the model.
  *
  * A zero-dependency logging proxy for Claude Code. It sits between the CLI and
- * the Anthropic API, forwards every request untouched (auth header and all),
- * streams the response straight back so the CLI is unaffected, and for each
- * request writes a readable Markdown document — led by a ranked table of what
- * is eating your context.
+ * the Anthropic API, forwards every request (auth headers pass through
+ * untouched), streams the response straight back so the CLI is unaffected, and
+ * for each request writes a readable Markdown document — led by a ranked table
+ * of what is eating your context.
+ *
+ * v2 also trims what it measures. Two cache-safe optimizations are on by
+ * default — run with --no-optimize to observe only. Every request is recorded
+ * in the ledger at logs/ledger.jsonl (replayed at boot, so the numbers survive
+ * restarts), and a live dashboard is served at /dashboard.
  *
  * Run:   node proxy.mjs
  * Point Claude Code at it:
  *   ANTHROPIC_BASE_URL=http://localhost:8787 claude
+ * Watch it:
+ *   http://localhost:8787/dashboard
  *
  * Zero runtime dependencies — Node built-ins only. Requires Node 18+.
  */
