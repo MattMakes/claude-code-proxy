@@ -579,7 +579,10 @@ function setResultText(block, text) {
 }
 
 function dedupPass(messages, state, deltaStart, saved) {
-  const seen = new Map(state.spans);
+  // Cross-turn spans only when the forwarded prefix is intact: after client-side
+  // compaction the first occurrence may be gone, and a stub must never point at
+  // content that no longer exists in context.
+  const seen = deltaStart > 0 ? new Map(state.spans) : new Map();
   messages.forEach((m, i) => {
     if (m?.role !== "user" || !Array.isArray(m.content)) return;
     for (const b of m.content) {
@@ -877,7 +880,11 @@ const replayed = LEDGER.replay();
 ```
 Then change the two references below: `forwardHeaders(req.headers, body)` → `forwardHeaders(req.headers, wireBody)`, and `upstream.write(body)` → `upstream.write(wireBody)` (with the matching `wireBody.length > 0` check).
 
-3e. In the `up.on("end", ...)` settle block (`proxy.mjs:278-292`), after `decodeResponse(...)` — extend `decodeResponse` to also return the raw split. Change its return (`proxy.mjs:236-239`) to:
+3e. In the `up.on("end", ...)` settle block (`proxy.mjs:278-292`): FIRST update the existing destructure at `proxy.mjs:283` to
+```js
+const { markdown, inputTokens, usageSplit } = decodeResponse(Buffer.concat(respChunks).toString("utf8"));
+```
+(without this the settle code below throws `ReferenceError: usageSplit is not defined`). Then extend `decodeResponse` to return the raw split. Change its return (`proxy.mjs:236-239`) to:
 ```js
   const usageSplit = usage ? {
     input: usage.input_tokens ?? 0,
@@ -894,7 +901,10 @@ Then in the settle block, after the existing `.md` write (keep rendering from th
 ```js
             if (pipeline) {
               const { sid, state, opt } = pipeline;
-              if ((up.statusCode ?? 0) < 500 && opt.applied) commitForward(state, opt.body, usageSplit);
+              // Commit whatever was ACTUALLY forwarded — the optimized body when
+              // applied, the original in projection mode — so cross-turn state
+              // (prefix hash, span memory) stays truthful in both modes.
+              if ((up.statusCode ?? 0) < 500) commitForward(state, opt.applied ? opt.body : pipeline.reqJson, usageSplit);
               else if (usageSplit) state.lastUsage = usageSplit;
               LEDGER.append({ ts: timestamp, session: sid, model: pipeline.reqJson?.model ?? "unknown",
                 original_tokens: opt.originalTokens, optimized_tokens: opt.optimizedTokens,
@@ -906,7 +916,14 @@ Then in the settle block, after the existing `.md` write (keep rendering from th
 ```
 (The existing `try/catch` around the settle block already guarantees a logging failure can't affect the already-finished response.)
 
-3f. Extend the startup banner (`proxy.mjs:305-308`):
+3f. Bind loopback by default (`proxy.mjs:305`) — v2 exposes usage data via `/stats` and `/dashboard`, so the listener must not face the LAN unless asked:
+```js
+const HOST = process.env.HOST ?? "127.0.0.1";
+http.createServer(handle).listen(PORT, HOST, () => {
+```
+(update the two `localhost` log lines to use `HOST === "127.0.0.1" ? "localhost" : HOST` or just keep `localhost` in the printed URLs).
+
+3g. Extend the startup banner (`proxy.mjs:305-308`):
 ```js
   console.log(`[agent-proxy] optimize: ${OPTIMIZE ? "ON (use --no-optimize to observe only)" : "OFF (projection only)"}`);
   console.log(`[agent-proxy] ledger: ${replayed} request(s) replayed · dashboard: http://localhost:${PORT}/dashboard`);
