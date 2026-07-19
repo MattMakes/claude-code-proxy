@@ -22,6 +22,24 @@ Point Claude Code at it:
 ANTHROPIC_BASE_URL=http://localhost:8787 claude
 ```
 
+`ANTHROPIC_BASE_URL` is the only variable the proxy needs. For the cleanest
+numbers, also silence Claude Code's background traffic:
+
+```bash
+ANTHROPIC_BASE_URL=http://localhost:8787 \
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+claude
+```
+
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` stops the auto-updater, fast-mode
+availability check, and gateway model discovery — background calls that go
+straight to api.anthropic.com and bypass the proxy anyway. Statsig telemetry
+and Sentry error reports also never pass through the proxy (third-party
+endpoints), so they can't pollute the ledger; add `DISABLE_TELEMETRY=1` and
+`DISABLE_ERROR_REPORTING=1` only if you don't want them sent at all. The
+`count_tokens` housekeeping calls DO pass through, but the proxy already
+excludes them from both the logs and the ledger.
+
 Open the dashboard:
 
 ```
