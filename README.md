@@ -68,8 +68,14 @@ Open the dashboard:
 http://localhost:8787/dashboard
 ```
 
-Session, Lifetime, and History views, polling `GET /stats` every 5 seconds.
-`GET /stats?format=jsonl` streams the raw ledger; the History tab exports CSV.
+Four views: Session, Lifetime, History, and Insights — the optimization-
+opportunity view: cumulative tool-definition cut list (what each tool schema
+costs you across all requests, in tokens and ≈dollars), most expensive
+requests, per-model cache hit rates, and waste signals (total cache-bust
+cost, average system-prompt weight). The page updates live: every settled
+request is pushed over Server-Sent Events (`GET /stats/stream`), with a 5-
+second poll of `GET /stats` as fallback. `GET /stats?format=jsonl` streams
+the raw ledger; the History tab exports CSV.
 
 To measure without changing a single byte of traffic:
 
