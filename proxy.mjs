@@ -20,11 +20,23 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { estTokens as estTok } from "./lib/cost.mjs";
+import { loadPrices } from "./lib/cost.mjs";
+import { extractSessionId, sessionState } from "./lib/session.mjs";
+import { createLedger } from "./lib/ledger.mjs";
+import { optimize, commitForward } from "./lib/optimize.mjs";
+
 const PORT = Number(process.env.PORT ?? 8787);
 const UPSTREAM = "api.anthropic.com";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LOG_DIR = path.join(HERE, "logs");
+
+const OPTIMIZE = !process.argv.includes("--no-optimize");
+const BOOT_ID = Math.random().toString(36).slice(2, 8);
+const PRICES = loadPrices();
+const LEDGER = createLedger({ dir: LOG_DIR, prices: PRICES });
+const replayed = LEDGER.replay();
 
 /** Rough token estimate for display. Real input tokens come from the response
  * usage; this is only for ranking the request before the reply arrives. */
@@ -233,10 +245,16 @@ function decodeResponse(raw) {
     else if (b.type === "thinking") parts.push(["<thinking>", "", b.text, "", "</thinking>"].join("\n"));
     else if (b.type === "tool_use") parts.push([`<tool-use name="${b.name}" id="${b.id ?? ""}">`, "", fence(b.text || "{}", "json"), "", "</tool-use>"].join("\n"));
   }
-  const inputTokens = usage
-    ? (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0)
+  const usageSplit = usage ? {
+    input: usage.input_tokens ?? 0,
+    cache_read: usage.cache_read_input_tokens ?? 0,
+    cache_creation: usage.cache_creation_input_tokens ?? 0,
+    output: usage.output_tokens ?? 0,
+  } : null;
+  const inputTokens = usageSplit
+    ? usageSplit.input + usageSplit.cache_read + usageSplit.cache_creation
     : null;
-  return { markdown: parts.length ? parts.join("\n\n") : fence(raw), inputTokens };
+  return { markdown: parts.length ? parts.join("\n\n") : fence(raw), inputTokens, usageSplit };
 }
 
 function renderMarkdown(c, audit, responseMd) {
@@ -262,6 +280,27 @@ function renderMarkdown(c, audit, responseMd) {
 
 function handle(req, res) {
   const reqPath = req.url ?? "/";
+  if (req.method === "GET" && reqPath.startsWith("/stats")) {
+    if (reqPath.includes("format=jsonl")) {
+      res.writeHead(200, { "content-type": "application/x-ndjson" });
+      fs.existsSync(LEDGER.file) ? fs.createReadStream(LEDGER.file).pipe(res) : res.end();
+    } else {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ optimize: OPTIMIZE, ...LEDGER.stats() }));
+    }
+    return;
+  }
+  if (req.method === "GET" && reqPath.startsWith("/dashboard")) {
+    try {
+      const html = fs.readFileSync(path.join(HERE, "dashboard.html"));
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(html);
+    } catch {
+      res.writeHead(404, { "content-type": "text/plain" });
+      res.end("dashboard.html not built yet");
+    }
+    return;
+  }
   const chunks = [];
   req.on("data", (c) => chunks.push(c));
   req.on("end", () => {
@@ -269,8 +308,30 @@ function handle(req, res) {
     const timestamp = new Date().toISOString();
     const base = baseName();
 
+    const t0 = Date.now();
+    let pipeline = null; // { reqJson, sid, state, opt, forwardBody }
+    if (!isTokenCount(reqPath) && (req.method ?? "POST") === "POST") {
+      try {
+        const reqJson = JSON.parse(body.toString("utf8"));
+        const sid = extractSessionId(reqJson, BOOT_ID);
+        const state = sessionState(sid);
+        let opt;
+        try {
+          opt = optimize(reqJson, state, { apply: OPTIMIZE });
+        } catch (err) {
+          console.error(`[agent-proxy] optimizer error (forwarding original): ${err.message}`);
+          opt = { body: reqJson, originalTokens: estTok(body.toString("utf8")),
+            optimizedTokens: estTok(body.toString("utf8")),
+            savedDetail: { dedup: 0, stale_read: 0 }, applied: false };
+        }
+        const forwardBody = opt.applied ? Buffer.from(JSON.stringify(opt.body)) : body;
+        pipeline = { reqJson, sid, state, opt, forwardBody };
+      } catch { /* non-JSON body: forward untouched, no pipeline (v1 invariant) */ }
+    }
+    const wireBody = pipeline ? pipeline.forwardBody : body;
+
     const upstream = https.request(
-      { hostname: UPSTREAM, port: 443, path: reqPath, method: req.method, headers: forwardHeaders(req.headers, body) },
+      { hostname: UPSTREAM, port: 443, path: reqPath, method: req.method, headers: forwardHeaders(req.headers, wireBody) },
       (up) => {
         res.writeHead(up.statusCode ?? 502, up.headers);
         const respChunks = [];
@@ -280,12 +341,26 @@ function handle(req, res) {
           if (isTokenCount(reqPath)) return;
           try {
             const reqJson = JSON.parse(body.toString("utf8"));
-            const { markdown, inputTokens } = decodeResponse(Buffer.concat(respChunks).toString("utf8"));
+            const { markdown, inputTokens, usageSplit } = decodeResponse(Buffer.concat(respChunks).toString("utf8"));
             const audit = auditRequest(reqJson, inputTokens);
             fs.mkdirSync(LOG_DIR, { recursive: true });
             fs.writeFileSync(path.join(LOG_DIR, `${base}.request.txt`), body.toString("utf8"));
             fs.writeFileSync(path.join(LOG_DIR, `${base}.md`), renderMarkdown({ reqJson, timestamp, method: req.method ?? "POST", path: reqPath, statusCode: up.statusCode ?? 0, headers: req.headers }, audit, markdown));
             printAudit(audit, base);
+            if (pipeline) {
+              const { sid, state, opt } = pipeline;
+              // Commit whatever was ACTUALLY forwarded — the optimized body when
+              // applied, the original in projection mode — so cross-turn state
+              // (prefix hash, span memory) stays truthful in both modes.
+              if ((up.statusCode ?? 0) < 500) commitForward(state, opt.applied ? opt.body : pipeline.reqJson, usageSplit);
+              else if (usageSplit) state.lastUsage = usageSplit;
+              LEDGER.append({ ts: timestamp, session: sid, model: pipeline.reqJson?.model ?? "unknown",
+                original_tokens: opt.originalTokens, optimized_tokens: opt.optimizedTokens,
+                saved_tokens: opt.originalTokens - opt.optimizedTokens,
+                saved_detail: opt.savedDetail, applied: opt.applied,
+                usage: usageSplit ?? { input: 0, cache_read: 0, cache_creation: 0, output: 0 },
+                status: up.statusCode ?? 0, ms: Date.now() - t0 });
+            }
           } catch (err) {
             console.error(`[agent-proxy] could not render (non-JSON body?): ${err.message}`);
           }
@@ -297,12 +372,15 @@ function handle(req, res) {
       if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: `agent-proxy upstream error: ${err.message}` }));
     });
-    if (body.length > 0) upstream.write(body);
+    if (wireBody.length > 0) upstream.write(wireBody);
     upstream.end();
   });
 }
 
-http.createServer(handle).listen(PORT, () => {
+const HOST = process.env.HOST ?? "127.0.0.1";
+http.createServer(handle).listen(PORT, HOST, () => {
   console.log(`[agent-proxy] listening on http://localhost:${PORT}`);
   console.log(`[agent-proxy] point Claude Code at it:  ANTHROPIC_BASE_URL=http://localhost:${PORT} claude`);
+  console.log(`[agent-proxy] optimize: ${OPTIMIZE ? "ON (use --no-optimize to observe only)" : "OFF (projection only)"}`);
+  console.log(`[agent-proxy] ledger: ${replayed} request(s) replayed · dashboard: http://localhost:${PORT}/dashboard`);
 });
