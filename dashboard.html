@@ -1,0 +1,138 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>agent-proxy dashboard</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { --bg:#0f1115; --card:#181b22; --ink:#e8eaf0; --dim:#8b93a7; --green:#4ade80; --grey:#475069; --red:#f87171; --accent:#7aa2ff; }
+  * { box-sizing:border-box; margin:0 }
+  body { background:var(--bg); color:var(--ink); font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; padding:20px; max-width:1100px; margin:auto }
+  h1 { font-size:18px; margin-bottom:4px } .sub { color:var(--dim); margin-bottom:16px }
+  nav button { background:none; border:1px solid var(--grey); color:var(--ink); padding:6px 14px; margin-right:8px; border-radius:6px; cursor:pointer }
+  nav button.on { border-color:var(--accent); color:var(--accent) }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin:16px 0 }
+  .card { background:var(--card); border-radius:10px; padding:14px }
+  .card .k { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.06em }
+  .card .v { font-size:22px; margin-top:4px } .card .v.save { color:var(--green) }
+  .gauge { background:var(--card); border-radius:10px; padding:14px; margin:12px 0 }
+  .bar { height:22px; border-radius:5px; margin:6px 0; display:flex; align-items:center; padding-left:8px; font-size:12px; white-space:nowrap }
+  .bar.without { background:var(--grey) } .bar.with { background:var(--green); color:#0b2812 }
+  table { width:100%; border-collapse:collapse; background:var(--card); border-radius:10px; overflow:hidden }
+  th,td { text-align:right; padding:7px 10px; font-size:12px } th { color:var(--dim) }
+  td:first-child,th:first-child { text-align:left } tr+tr td { border-top:1px solid #232837 }
+  .hit-hi { color:var(--green) } .hit-lo { color:var(--red) }
+  select,a.btn { background:var(--card); color:var(--ink); border:1px solid var(--grey); border-radius:6px; padding:6px 10px; text-decoration:none }
+  #err { color:var(--red); margin:8px 0; display:none }
+  svg { display:block } .split { display:flex; height:14px; border-radius:4px; overflow:hidden; margin-top:6px }
+  .seg { height:100% } .legend { color:var(--dim); font-size:11px; margin-top:4px }
+  .hist { display:flex; align-items:flex-end; gap:3px; height:140px; background:var(--card); border-radius:10px; padding:12px }
+  .hcol { flex:1; display:flex; flex-direction:column; justify-content:flex-end; gap:1px }
+  .hcol div { border-radius:2px 2px 0 0 }
+</style></head><body>
+<h1>agent-proxy</h1><div class="sub" id="mode"></div>
+<nav><button data-v="session" class="on">Session</button><button data-v="lifetime">Lifetime</button><button data-v="history">History</button></nav>
+<div id="err">proxy unreachable — showing last data</div>
+<div id="view"></div>
+<script>
+const $ = (s) => document.querySelector(s);
+const usd = (n) => "$" + (Math.abs(n) < 1 ? n.toFixed(4) : n.toFixed(2));
+const tok = (n) => n >= 1e6 ? (n/1e6).toFixed(2)+"M" : n >= 1e3 ? (n/1e3).toFixed(1)+"k" : String(n);
+const pct = (n) => (100*n).toFixed(1)+"%";
+let DATA = null, VIEW = "session", SESSION = null;
+
+function card(k, v, cls="") { return `<div class="card"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`; }
+
+function gauge(withUsd, withoutUsd) {
+  const max = Math.max(withoutUsd, withUsd, 1e-9);
+  return `<div class="gauge"><div class="k" style="color:var(--dim);font-size:11px">COST — WITHOUT vs WITH OPTIMIZATION</div>
+    <div class="bar without" style="width:${100*withoutUsd/max}%">without ${usd(withoutUsd)}</div>
+    <div class="bar with" style="width:${Math.max(2,100*withUsd/max)}%">with ${usd(withUsd)}</div>
+    <div class="legend">saved ${usd(withoutUsd-withUsd)} (${withoutUsd ? pct((withoutUsd-withUsd)/withoutUsd) : "0%"})</div></div>`;
+}
+
+function tokenSplit(t) {
+  const total = t.input + t.cache_read + t.cache_creation + t.output || 1;
+  const seg = (n, c) => `<div class="seg" style="width:${100*n/total}%;background:${c}"></div>`;
+  return `<div class="card"><div class="k">token flow</div><div class="split">
+    ${seg(t.input,"#7aa2ff")}${seg(t.cache_read,"#4ade80")}${seg(t.cache_creation,"#fbbf24")}${seg(t.output,"#f472b6")}</div>
+    <div class="legend">■ uncached ${tok(t.input)} · <span style="color:#4ade80">■</span> cache-read ${tok(t.cache_read)} · <span style="color:#fbbf24">■</span> cache-write ${tok(t.cache_creation)} · <span style="color:#f472b6">■</span> output ${tok(t.output)}</div></div>`;
+}
+
+function sparkline(recent) {
+  if (!recent.length) return "";
+  const w = 600, h = 46, step = w / Math.max(recent.length - 1, 1);
+  const pts = recent.map((r, i) => `${(i*step).toFixed(1)},${(h - 4 - r.hit_rate*(h-8)).toFixed(1)}`).join(" ");
+  const busts = recent.map((r, i) => r.hit_rate < 0.1 && i > 0 && recent[i-1].hit_rate > 0.5
+    ? `<circle cx="${(i*step).toFixed(1)}" cy="${h-4}" r="3" fill="#f87171"/>` : "").join("");
+  return `<div class="card"><div class="k">cache hit rate per request (red dot = bust)</div>
+    <svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}"><polyline points="${pts}" fill="none" stroke="#4ade80" stroke-width="1.5"/>${busts}</svg></div>`;
+}
+
+function feed(recent) {
+  const rows = recent.slice(-20).reverse().map((r) => `<tr>
+    <td>${r.ts.slice(11,19)}</td><td>${r.model}</td><td>${r.status}</td>
+    <td>${tok((r.usage?.input??0)+(r.usage?.cache_read??0)+(r.usage?.cache_creation??0))}</td>
+    <td class="${r.hit_rate>0.5?"hit-hi":"hit-lo"}">${pct(r.hit_rate)}</td>
+    <td>${tok(r.saved_tokens)}${r.applied?"":" (proj)"}</td><td>${usd(r.cost_with)}</td><td>${r.ms}ms</td></tr>`).join("");
+  return `<table><tr><th>time</th><th>model</th><th>st</th><th>in-tok</th><th>cache hit</th><th>saved</th><th>cost</th><th>ms</th></tr>${rows}</table>`;
+}
+
+function renderSession() {
+  const list = DATA.sessions;
+  if (!list.length) return "<div class='card'>no requests yet — point Claude Code at this proxy</div>";
+  SESSION = list.find((s) => s.id === SESSION?.id) ?? list[0];
+  const opts = list.map((s) => `<option value="${s.id}" ${s.id===SESSION.id?"selected":""}>${s.id.slice(0,12)} · ${s.requests} req · ${usd(s.cost_with)}</option>`).join("");
+  return `<div style="margin:12px 0"><select onchange="SESSION=DATA.sessions.find(s=>s.id===this.value);paint()">${opts}</select></div>`
+    + gauge(SESSION.cost_with, SESSION.cost_without)
+    + `<div class="cards">${card("saved tokens", tok(SESSION.saved_tokens), "save")}
+       ${card("dedup / stale", tok(SESSION.saved_detail.dedup)+" / "+tok(SESSION.saved_detail.stale_read))}
+       ${card("cache savings (separate)", usd(SESSION.cache_savings), "save")}
+       ${card("busts · cost", SESSION.busts+" · "+usd(SESSION.bust_cost))}</div>`
+    + tokenSplit(SESSION.tokens) + sparkline(SESSION.recent) + feed(SESSION.recent);
+}
+
+function renderLifetime() {
+  const L = DATA.lifetime;
+  const models = Object.entries(L.by_model).map(([m, v]) =>
+    `<tr><td>${m}</td><td>${v.requests}</td><td>${tok(v.saved_tokens)}</td><td>${usd(v.cost_with)}</td></tr>`).join("");
+  return gauge(L.cost_with, L.cost_without)
+    + `<div class="cards">${card("requests", L.requests)}${card("sessions", DATA.sessions.length)}
+       ${card("saved tokens", tok(L.saved_tokens), "save")}${card("cache savings (separate)", usd(L.cache_savings), "save")}</div>`
+    + `<table><tr><th>model</th><th>requests</th><th>saved</th><th>cost (with)</th></tr>${models}</table>`;
+}
+
+function renderHistory() {
+  const hs = DATA.hourly.slice(-48);
+  if (!hs.length) return "<div class='card'>no history yet</div>";
+  const max = Math.max(...hs.map((h) => h.cost_without), 1e-9);
+  const cols = hs.map((h) => `<div class="hcol" title="${h.hour} · without ${usd(h.cost_without)} · with ${usd(h.cost_with)}">
+    <div style="height:${140*(h.cost_without-h.cost_with)/max}px;background:var(--grey)"></div>
+    <div style="height:${140*h.cost_with/max}px;background:var(--green)"></div></div>`).join("");
+  return `<div class="legend" style="margin:10px 0">last ${hs.length}h — <span style="color:#4ade80">■ with</span> / ■ saved (would-have-paid)</div>
+    <div class="hist">${cols}</div>
+    <div style="margin-top:12px"><a class="btn" href="#" onclick="csv();return false">download CSV</a>
+    <a class="btn" href="/stats?format=jsonl" download="ledger.jsonl">raw JSONL</a></div>`;
+}
+
+async function csv() {
+  const lines = (await (await fetch("/stats?format=jsonl")).text()).trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  const head = "ts,session,model,original_tokens,optimized_tokens,saved_tokens,applied,input,cache_read,cache_creation,output,status,ms";
+  const body = lines.map((e) => [e.ts, e.session, e.model, e.original_tokens, e.optimized_tokens, e.saved_tokens,
+    e.applied, e.usage?.input, e.usage?.cache_read, e.usage?.cache_creation, e.usage?.output, e.status, e.ms].join(","));
+  const blob = new Blob([[head, ...body].join("\n")], { type: "text/csv" });
+  Object.assign(document.createElement("a"), { href: URL.createObjectURL(blob), download: "ledger.csv" }).click();
+}
+
+function paint() {
+  if (!DATA) return;
+  $("#mode").textContent = `optimize: ${DATA.optimize ? "ON" : "OFF (projection only)"} · ${DATA.lifetime.requests} requests`;
+  $("#view").innerHTML = VIEW === "session" ? renderSession() : VIEW === "lifetime" ? renderLifetime() : renderHistory();
+}
+document.querySelectorAll("nav button").forEach((b) => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach((x) => x.classList.remove("on"));
+  b.classList.add("on"); VIEW = b.dataset.v; paint();
+});
+async function poll() {
+  try { DATA = await (await fetch("/stats")).json(); $("#err").style.display = "none"; paint(); }
+  catch { $("#err").style.display = "block"; }
+}
+poll(); setInterval(poll, 5000);
+</script></body></html>
