@@ -28,7 +28,7 @@
   .hcol div { border-radius:2px 2px 0 0 }
 </style></head><body>
 <h1>agent-proxy</h1><div class="sub" id="mode"></div>
-<nav><button data-v="session" class="on">Session</button><button data-v="lifetime">Lifetime</button><button data-v="history">History</button></nav>
+<nav><button data-v="session" class="on">Session</button><button data-v="lifetime">Lifetime</button><button data-v="history">History</button><button data-v="insights">Insights</button></nav>
 <div id="err">proxy unreachable — showing last data</div>
 <div id="view"></div>
 <script>
@@ -112,6 +112,27 @@ function renderHistory() {
     <a class="btn" href="/stats?format=jsonl" download="ledger.jsonl">raw JSONL</a></div>`;
 }
 
+function renderInsights() {
+  const tools = DATA.tools ?? [], top = DATA.top_requests ?? [], models = DATA.by_model ?? [], waste = DATA.waste ?? {};
+  const cards = `<div class="cards">${card("cache busts cost", usd(waste.bust_cost_total ?? 0))}
+    ${card("avg system prompt", tok(waste.system_tokens_avg ?? 0) + " tok")}</div>`;
+  const toolTable = tools.length ? `<div class="legend" style="margin:10px 0">tool definitions — cumulative cut list</div>
+    <table><tr><th>tool</th><th>tok/req</th><th>requests</th><th>total tok</th><th>≈$</th></tr>${tools.map((t) => `<tr>
+    <td>${t.name}</td><td>${tok(t.tokens_per_request)}</td><td>${t.requests}</td><td>${tok(t.tokens_total)}</td><td>≈${usd(t.usd_total)}</td></tr>`).join("")}</table>`
+    : "<div class='card'>no tool breakdowns yet — new requests will populate the cut list</div>";
+  const topTable = top.length ? `<div class="legend" style="margin:10px 0">most expensive requests</div>
+    <table><tr><th>time</th><th>session</th><th>model</th><th>in-tok</th><th>cache hit</th><th>cost</th></tr>${top.map((r) => `<tr>
+    <td>${r.ts.slice(11,19)}</td><td>${r.session.slice(0,8)}</td><td>${r.model}</td><td>${tok(r.in_tokens)}</td>
+    <td class="${r.hit_rate>0.5?"hit-hi":"hit-lo"}">${pct(r.hit_rate)}</td><td>${usd(r.cost_with)}</td></tr>`).join("")}</table>`
+    : "<div class='card'>no requests yet</div>";
+  const modelTable = models.length ? `<div class="legend" style="margin:10px 0">per model</div>
+    <table><tr><th>model</th><th>requests</th><th>cache hit</th><th>cache-read tok</th><th>uncached tok</th><th>cost (with)</th><th>cost (without)</th></tr>${models.map((m) => `<tr>
+    <td>${m.model}</td><td>${m.requests}</td><td class="${m.hit_rate>0.5?"hit-hi":"hit-lo"}">${pct(m.hit_rate)}</td>
+    <td>${tok(m.tokens.cache_read)}</td><td>${tok(m.tokens.input)}</td><td>${usd(m.cost_with)}</td><td>${usd(m.cost_without)}</td></tr>`).join("")}</table>`
+    : "<div class='card'>no model data yet</div>";
+  return cards + toolTable + topTable + modelTable;
+}
+
 async function csv() {
   const lines = (await (await fetch("/stats?format=jsonl")).text()).trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
   const head = "ts,session,model,original_tokens,optimized_tokens,saved_tokens,applied,input,cache_read,cache_creation,output,status,ms";
@@ -124,7 +145,8 @@ async function csv() {
 function paint() {
   if (!DATA) return;
   $("#mode").textContent = `optimize: ${DATA.optimize ? "ON" : "OFF (projection only)"} · ${DATA.lifetime.requests} requests`;
-  $("#view").innerHTML = VIEW === "session" ? renderSession() : VIEW === "lifetime" ? renderLifetime() : renderHistory();
+  $("#view").innerHTML = VIEW === "session" ? renderSession() : VIEW === "lifetime" ? renderLifetime()
+    : VIEW === "insights" ? renderInsights() : renderHistory();
 }
 document.querySelectorAll("nav button").forEach((b) => b.onclick = () => {
   document.querySelectorAll("nav button").forEach((x) => x.classList.remove("on"));
@@ -134,5 +156,7 @@ async function poll() {
   try { DATA = await (await fetch("/stats")).json(); $("#err").style.display = "none"; paint(); }
   catch { $("#err").style.display = "block"; }
 }
-poll(); setInterval(poll, 5000);
+poll(); setInterval(poll, 5000); // poll stays as the fallback if the stream drops
+const es = new EventSource("/stats/stream");
+es.onmessage = (e) => { DATA = JSON.parse(e.data); $("#err").style.display = "none"; paint(); };
 </script></body></html>
