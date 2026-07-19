@@ -22,14 +22,27 @@ Point Claude Code at it:
 ANTHROPIC_BASE_URL=http://localhost:8787 claude
 ```
 
-`ANTHROPIC_BASE_URL` is the only variable the proxy needs. For the cleanest
-numbers, also silence Claude Code's background traffic:
+`ANTHROPIC_BASE_URL` is the only variable the proxy strictly needs — but set
+this one too:
 
 ```bash
 ANTHROPIC_BASE_URL=http://localhost:8787 \
+_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1 \
 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
 claude
 ```
+
+`_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1` matters because Claude Code
+checks whether `ANTHROPIC_BASE_URL`'s host is `api.anthropic.com` and, when it
+isn't, silently switches into gateway mode: different model-id forms (the
+1M-context `[1m]` suffix handling changes), server-suggested model fallbacks
+disabled, no trace-context propagation, non-first-party pricing paths. A
+measuring proxy must not change the traffic it measures — this flag tells the
+CLI the endpoint really is Anthropic behind a transparent relay, which for
+this proxy is true. Caveats: it is an underscore-prefixed internal flag
+(undocumented, may change without notice; found in CLI v2.1.215), and it is
+only honest to set it for a transparent pass-through like this one — never
+for a real third-party gateway.
 
 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` stops the auto-updater, fast-mode
 availability check, and gateway model discovery — background calls that go
