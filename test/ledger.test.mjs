@@ -45,6 +45,50 @@ test("cache bust detected and costed", () => {
   assert.ok(Math.abs(sess.bust_cost - 9000 * (3.75e-6 - 3e-7)) < 1e-12);
 });
 
+test("breakdown: tools aggregate requests + tokens_total across entries", () => {
+  const led = createLedger({ dir: fs.mkdtempSync(path.join(os.tmpdir(), "led-")), prices });
+  const breakdown = { system: 2000, tools: 5000, messages: 3000,
+    tool_defs: [{ name: "Bash", tokens: 400 }, { name: "Read", tokens: 250 }] };
+  led.add(entry({ breakdown }));
+  led.add(entry({ breakdown }));
+  const s = led.stats();
+  const bash = s.tools.find((t) => t.name === "Bash");
+  assert.equal(bash.requests, 2);
+  assert.equal(bash.tokens_per_request, 400);
+  assert.equal(bash.tokens_total, 800);
+  assert.ok(bash.usd_total > 0); // priced at the most-used model's input rate
+  assert.equal(s.tools[0].name, "Bash"); // sorted by tokens_total desc
+});
+
+test("top_requests sorted desc by cost_with", () => {
+  const led = createLedger({ dir: fs.mkdtempSync(path.join(os.tmpdir(), "led-")), prices });
+  led.add(entry({ ts: "2026-07-19T10:00:01.000Z", usage: { input: 100, cache_read: 0, cache_creation: 0, output: 0 } }));
+  led.add(entry({ ts: "2026-07-19T10:00:02.000Z", usage: { input: 9000, cache_read: 0, cache_creation: 0, output: 0 } }));
+  led.add(entry({ ts: "2026-07-19T10:00:03.000Z", usage: { input: 3000, cache_read: 0, cache_creation: 0, output: 0 } }));
+  const top = led.stats().top_requests;
+  assert.equal(top.length, 3);
+  assert.deepEqual(top.map((r) => r.in_tokens), [9000, 3000, 100]);
+  assert.ok(top[0].cost_with >= top[1].cost_with && top[1].cost_with >= top[2].cost_with);
+});
+
+test("by_model hit_rate computed from accumulated token sums", () => {
+  const led = createLedger({ dir: fs.mkdtempSync(path.join(os.tmpdir(), "led-")), prices });
+  led.add(entry({ usage: { input: 1000, cache_read: 3000, cache_creation: 0, output: 100 } }));
+  led.add(entry({ usage: { input: 1000, cache_read: 1000, cache_creation: 0, output: 100 } }));
+  const bm = led.stats().by_model.find((m) => m.model === "claude-sonnet-5");
+  assert.equal(bm.requests, 2);
+  assert.ok(Math.abs(bm.hit_rate - 4000 / 6000) < 1e-12); // cache_read / (input+read+creation)
+});
+
+test("entry without breakdown still aggregates; tools stay empty", () => {
+  const led = createLedger({ dir: fs.mkdtempSync(path.join(os.tmpdir(), "led-")), prices });
+  led.add(entry());
+  const s = led.stats();
+  assert.deepEqual(s.tools, []);
+  assert.equal(s.waste.system_tokens_avg, 0);
+  assert.equal(s.lifetime.requests, 1);
+});
+
 test("append writes JSONL; replay rebuilds and skips corrupt trailing line", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "led-"));
   const led = createLedger({ dir, prices });
