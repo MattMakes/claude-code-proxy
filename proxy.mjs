@@ -366,7 +366,13 @@ function handle(req, res) {
                 saved_tokens: opt.originalTokens - opt.optimizedTokens,
                 saved_detail: opt.savedDetail, applied: opt.applied,
                 usage: usageSplit ?? { input: 0, cache_read: 0, cache_creation: 0, output: 0 },
-                status: up.statusCode ?? 0, ms: Date.now() - t0 });
+                status: up.statusCode ?? 0, ms: Date.now() - t0,
+                // Request composition, from the audit above — feeds the
+                // dashboard's cumulative tool cut-list and waste cards.
+                breakdown: { system: estTok(JSON.stringify(reqJson.system ?? "")),
+                  tools: estTokens(audit.toolsBytes),
+                  messages: estTok(JSON.stringify(reqJson.messages ?? [])),
+                  tool_defs: audit.toolRows.slice(0, 15).map((r) => ({ name: r.name, tokens: r.tokens })) } });
             }
           } catch (err) {
             console.error(`[agent-proxy] could not render (non-JSON body?): ${err.message}`);

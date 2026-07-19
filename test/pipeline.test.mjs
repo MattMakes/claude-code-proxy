@@ -32,11 +32,14 @@ test("golden: request → optimize → ledger → stats", () => {
   led.append({ ts: new Date().toISOString(), session: sid, model: reqJson.model,
     original_tokens: opt.originalTokens, optimized_tokens: opt.optimizedTokens,
     saved_tokens: opt.originalTokens - opt.optimizedTokens, saved_detail: opt.savedDetail,
-    applied: opt.applied, usage, status: 200, ms: 42 });
+    applied: opt.applied, usage, status: 200, ms: 42,
+    breakdown: { system: 2250, tools: 120, messages: 900,
+      tool_defs: [{ name: "Read", tokens: 120 }] } });
 
   const s = led.stats();
   const sess = s.sessions.find((x) => x.id === sid);
   assert.equal(sess.requests, 1);
   assert.ok(sess.cost_without > sess.cost_with);
+  assert.ok(s.tools.length > 0 && s.tools[0].name === "Read");
   assert.ok(fs.existsSync(led.file));
 });
