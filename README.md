@@ -44,6 +44,15 @@ this proxy is true. Caveats: it is an underscore-prefixed internal flag
 only honest to set it for a transparent pass-through like this one — never
 for a real third-party gateway.
 
+Optional, for measurement fidelity: `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1`.
+On stream stalls the CLI can retry a request in non-streaming mode; those
+responses carry usage in plain JSON instead of SSE, which this proxy's decoder
+doesn't parse, so the ledger records them with zero usage. Disabling the
+fallback keeps every request measurable — at the cost of a hard failure
+instead of a fallback if a stream genuinely breaks. Leave the
+`DISABLE_PROMPT_CACHING*` family unset: caching opt-outs would wreck both your
+costs and the cache analytics this proxy exists to show.
+
 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` stops the auto-updater, fast-mode
 availability check, and gateway model discovery — background calls that go
 straight to api.anthropic.com and bypass the proxy anyway. Statsig telemetry
