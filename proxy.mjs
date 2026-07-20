@@ -35,6 +35,7 @@ import { optimize, commitForward } from "./lib/optimize.mjs";
 import { createSseHub } from "./lib/sse.mjs";
 import { createCcrStore } from "./lib/ccr.mjs";
 import { routeModel, DEFAULT_TIER_MAP } from "./lib/route.mjs";
+import { renderMetrics } from "./lib/metrics.mjs";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const UPSTREAM = "api.anthropic.com";
@@ -306,6 +307,11 @@ function handle(req, res) {
       res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
       res.end(JSON.stringify({ optimize: OPTIMIZE, ...LEDGER.stats() }));
     }
+    return;
+  }
+  if (req.method === "GET" && reqPath.startsWith("/metrics")) {
+    res.writeHead(200, { "content-type": "text/plain; version=0.0.4; charset=utf-8" });
+    res.end(renderMetrics(LEDGER.stats(), { ccrEntries: CCR.size() }));
     return;
   }
   if (req.method === "GET" && reqPath.startsWith("/ccr/")) {
