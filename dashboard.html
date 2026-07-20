@@ -60,7 +60,7 @@ function sparkline(recent) {
   if (!recent.length) return "";
   const w = 600, h = 46, step = w / Math.max(recent.length - 1, 1);
   const pts = recent.map((r, i) => `${(i*step).toFixed(1)},${(h - 4 - r.hit_rate*(h-8)).toFixed(1)}`).join(" ");
-  const busts = recent.map((r, i) => r.hit_rate < 0.1 && i > 0 && recent[i-1].hit_rate > 0.5
+  const busts = recent.map((r, i) => r.bust
     ? `<circle cx="${(i*step).toFixed(1)}" cy="${h-4}" r="3" fill="#f87171"/>` : "").join("");
   return `<div class="card"><div class="k">cache hit rate per request (red dot = bust)</div>
     <svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}"><polyline points="${pts}" fill="none" stroke="#4ade80" stroke-width="1.5"/>${busts}</svg></div>`;
@@ -76,11 +76,13 @@ function feed(recent) {
 }
 
 function renderSession() {
-  const list = DATA.sessions;
-  if (!list.length) return "<div class='card'>no requests yet — point Claude Code at this proxy</div>";
-  SESSION = list.find((s) => s.id === SESSION?.id) ?? list[0];
-  const opts = list.map((s) => `<option value="${s.id}" ${s.id===SESSION.id?"selected":""}>${s.id.slice(0,12)} · ${s.requests} req · ${usd(s.cost_with)}</option>`).join("");
-  return `<div style="margin:12px 0"><select onchange="SESSION=DATA.sessions.find(s=>s.id===this.value);paint()">${opts}</select></div>`
+  if (!DATA.sessions.length) return "<div class='card'>no requests yet — point Claude Code at this proxy</div>";
+  const allOpt = DATA.all ? { ...DATA.all, id: "__all__" } : null;
+  const list = allOpt ? [allOpt, ...DATA.sessions] : DATA.sessions;
+  SESSION = list.find((s) => s.id === SESSION?.id) ?? DATA.sessions[0];
+  const label = (s) => (s.id === "__all__" ? "All sessions" : s.id.slice(0, 12)) + ` · ${s.requests} req · ${usd(s.cost_with)}`;
+  const opts = list.map((s) => `<option value="${s.id}" ${s.id===SESSION.id?"selected":""}>${label(s)}</option>`).join("");
+  return `<div style="margin:12px 0"><select onchange="SESSION=(this.value==='__all__'?{...DATA.all,id:'__all__'}:DATA.sessions.find(s=>s.id===this.value));paint()">${opts}</select></div>`
     + gauge(SESSION.cost_with, SESSION.cost_without)
     + `<div class="cards">${card("saved tokens", tok(SESSION.saved_tokens), "save")}
        ${card("dedup / stale", tok(SESSION.saved_detail.dedup)+" / "+tok(SESSION.saved_detail.stale_read))}

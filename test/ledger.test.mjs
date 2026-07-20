@@ -98,3 +98,27 @@ test("append writes JSONL; replay rebuilds and skips corrupt trailing line", () 
   led2.replay();
   assert.equal(led2.stats().lifetime.requests, 1);
 });
+
+test("all-sessions rollup: session-shaped cumulative view", () => {
+  const led = createLedger({ dir: fs.mkdtempSync(path.join(os.tmpdir(), "led-")), prices });
+  led.add(entry());
+  led.add(entry({ session: "s2" }));
+  const a = led.stats().all;
+  assert.equal(a.id, "all");
+  assert.equal(a.requests, 2);
+  assert.equal(a.recent.length, 2);
+  assert.equal(a.tokens.cache_read, 16000);
+  assert.equal(a.saved_tokens, 2000);
+  assert.ok(Math.abs(a.cost_without - (a.cost_with + 2000 * 3e-6)) < 1e-12);
+});
+
+test("recent entries carry session-scoped bust flags across interleaved sessions", () => {
+  const led = createLedger({ dir: fs.mkdtempSync(path.join(os.tmpdir(), "led-")), prices });
+  const cold = { input: 200, cache_read: 0, cache_creation: 9000, output: 100 };
+  led.add(entry());                                  // s1, cache-hot
+  led.add(entry({ session: "s2", usage: cold }));    // s2 FIRST request: cold, but not a bust
+  led.add(entry({ usage: cold }));                   // s1 again: genuine bust
+  const a = led.stats().all;
+  assert.deepEqual(a.recent.map((r) => !!r.bust), [false, false, true]);
+  assert.equal(a.busts, 1);
+});
