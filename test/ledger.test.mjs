@@ -123,6 +123,34 @@ test("saved_detail.crush sums; old lines without crush replay fine", () => {
   assert.equal(s.all.saved_detail.crush, 250);
 });
 
+test("routing aggregate: tiers counted, potential accrues only when target differs", () => {
+  const haiku = { input_cost_per_token: 1e-6, output_cost_per_token: 5e-6,
+    cache_read_input_token_cost: 1e-7, cache_creation_input_token_cost: 1.25e-6 };
+  const led = createLedger({ dir: fs.mkdtempSync(path.join(os.tmpdir(), "led-")),
+    prices: { "claude-sonnet-5": price, "claude-haiku-4-5": haiku } });
+  led.add(entry()); // old ledger line without route: must aggregate fine
+  led.add(entry({ route: { tier: "SIMPLE", score: 0.05, from: "claude-sonnet-5",
+    target: "claude-haiku-4-5", apply_ok: true, applied: false } }));
+  led.add(entry({ route: { tier: "COMPLEX", score: 0.5, from: "claude-sonnet-5",
+    target: "claude-sonnet-5", apply_ok: false, applied: false } }));
+  const r = led.stats().routing;
+  assert.deepEqual(r.tiers, { SIMPLE: 1, MODERATE: 0, COMPLEX: 1, REASONING: 0 });
+  assert.equal(r.applied, 0);
+  // Only the target!==from entry accrues: usage in = 500+8000+500 = 9000, out = 300.
+  // 9000·(3e-6 − 1e-6) + 300·(1.5e-5 − 5e-6) = 0.018 + 0.003
+  assert.ok(Math.abs(r.potential_saved_usd - 0.021) < 1e-12);
+});
+
+test("routing aggregate: applied decisions counted; unknown target price accrues nothing", () => {
+  const led = createLedger({ dir: fs.mkdtempSync(path.join(os.tmpdir(), "led-")), prices });
+  led.add(entry({ model: "claude-haiku-4-5", route: { tier: "SIMPLE", score: 0.05,
+    from: "claude-sonnet-5", target: "claude-haiku-4-5", apply_ok: true, applied: true } }));
+  const r = led.stats().routing;
+  assert.equal(r.applied, 1);
+  assert.equal(r.tiers.SIMPLE, 1);
+  assert.equal(r.potential_saved_usd, 0); // haiku missing from this price map → skip, no NaN
+});
+
 test("recent entries carry session-scoped bust flags across interleaved sessions", () => {
   const led = createLedger({ dir: fs.mkdtempSync(path.join(os.tmpdir(), "led-")), prices });
   const cold = { input: 200, cache_read: 0, cache_creation: 9000, output: 100 };

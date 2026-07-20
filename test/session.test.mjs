@@ -22,3 +22,10 @@ test("sessionState returns the same object per id, fresh per id", () => {
   assert.equal(sessionState("x").forwardedCount, 5);
   assert.equal(sessionState("y").forwardedCount, 0);
 });
+
+test("session state starts with routePin null and holds a pin once set", () => {
+  const s = sessionState("route-pin");
+  assert.equal(s.routePin, null);
+  s.routePin = "claude-haiku-4-5";
+  assert.equal(sessionState("route-pin").routePin, "claude-haiku-4-5");
+});

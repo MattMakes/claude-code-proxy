@@ -34,6 +34,7 @@ import { createLedger } from "./lib/ledger.mjs";
 import { optimize, commitForward } from "./lib/optimize.mjs";
 import { createSseHub } from "./lib/sse.mjs";
 import { createCcrStore } from "./lib/ccr.mjs";
+import { routeModel, DEFAULT_TIER_MAP } from "./lib/route.mjs";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const UPSTREAM = "api.anthropic.com";
@@ -42,6 +43,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LOG_DIR = path.join(HERE, "logs");
 
 const OPTIMIZE = !process.argv.includes("--no-optimize");
+const ROUTE = process.argv.includes("--route");
 const BOOT_ID = Math.random().toString(36).slice(2, 8);
 const PRICES = loadPrices();
 const LEDGER = createLedger({ dir: LOG_DIR, prices: PRICES });
@@ -337,12 +339,29 @@ function handle(req, res) {
     const base = baseName();
 
     const t0 = Date.now();
-    let pipeline = null; // { reqJson, sid, state, opt, forwardBody }
+    let pipeline = null; // { reqJson, sid, state, opt, route, forwardBody }
     if (!isTokenCount(reqPath) && (req.method ?? "POST") === "POST") {
       try {
         const reqJson = JSON.parse(body.toString("utf8"));
         const sid = extractSessionId(reqJson, BOOT_ID);
         const state = sessionState(sid);
+        // Score every request (shadow by default — recorded, never applied).
+        // With --route, the first applied decision pins the session's target:
+        // a mid-session model swap busts the prompt cache, so flapping is
+        // worse than a stale pin. A scoring throw never fails the request.
+        let route = null;
+        try {
+          const decision = routeModel(reqJson, DEFAULT_TIER_MAP, PRICES);
+          let applied = false;
+          if (ROUTE && decision.apply_ok) {
+            state.routePin ??= decision.target;
+            reqJson.model = state.routePin;
+            applied = true;
+          }
+          route = { ...decision, applied };
+        } catch (err) {
+          console.error(`[agent-proxy] router error (continuing unrouted): ${err.message}`);
+        }
         let opt;
         try {
           opt = optimize(reqJson, state, { apply: OPTIMIZE, ccr: CCR, ccrUrl: `http://localhost:${PORT}/ccr` });
@@ -352,8 +371,11 @@ function handle(req, res) {
             optimizedTokens: estTok(body.toString("utf8")),
             savedDetail: { dedup: 0, stale_read: 0, crush: 0 }, applied: false };
         }
-        const forwardBody = opt.applied ? Buffer.from(JSON.stringify(opt.body)) : body;
-        pipeline = { reqJson, sid, state, opt, forwardBody };
+        // A routed model must reach the wire even when the optimizer didn't
+        // fire — opt.body is reqJson (already rewritten) in that case.
+        const forwardBody = opt.applied || route?.applied
+          ? Buffer.from(JSON.stringify(opt.body)) : body;
+        pipeline = { reqJson, sid, state, opt, route, forwardBody };
       } catch { /* non-JSON body: forward untouched, no pipeline (v1 invariant) */ }
     }
     const wireBody = pipeline ? pipeline.forwardBody : body;
@@ -386,6 +408,9 @@ function handle(req, res) {
                 original_tokens: opt.originalTokens, optimized_tokens: opt.optimizedTokens,
                 saved_tokens: opt.originalTokens - opt.optimizedTokens,
                 saved_detail: opt.savedDetail, applied: opt.applied,
+                // Routing decision; when applied, `model` above is the routed
+                // model and route.from keeps the original.
+                ...(pipeline.route && { route: pipeline.route }),
                 usage: usageSplit ?? { input: 0, cache_read: 0, cache_creation: 0, output: 0 },
                 status: up.statusCode ?? 0, ms: Date.now() - t0,
                 // Request composition, from the audit above — feeds the
@@ -417,5 +442,6 @@ http.createServer(handle).listen(PORT, HOST, () => {
   console.log(`[agent-proxy] listening on http://localhost:${PORT}`);
   console.log(`[agent-proxy] point Claude Code at it:  ANTHROPIC_BASE_URL=http://localhost:${PORT} claude`);
   console.log(`[agent-proxy] optimize: ${OPTIMIZE ? "ON (use --no-optimize to observe only)" : "OFF (projection only)"}`);
+  console.log(`[agent-proxy] routing: ${ROUTE ? "ON" : "SHADOW (use --route to apply)"}`);
   console.log(`[agent-proxy] ledger: ${replayed} request(s) replayed · dashboard: http://localhost:${PORT}/dashboard`);
 });
