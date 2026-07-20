@@ -345,12 +345,12 @@ function handle(req, res) {
         const state = sessionState(sid);
         let opt;
         try {
-          opt = optimize(reqJson, state, { apply: OPTIMIZE });
+          opt = optimize(reqJson, state, { apply: OPTIMIZE, ccr: CCR, ccrUrl: `http://localhost:${PORT}/ccr` });
         } catch (err) {
           console.error(`[agent-proxy] optimizer error (forwarding original): ${err.message}`);
           opt = { body: reqJson, originalTokens: estTok(body.toString("utf8")),
             optimizedTokens: estTok(body.toString("utf8")),
-            savedDetail: { dedup: 0, stale_read: 0 }, applied: false };
+            savedDetail: { dedup: 0, stale_read: 0, crush: 0 }, applied: false };
         }
         const forwardBody = opt.applied ? Buffer.from(JSON.stringify(opt.body)) : body;
         pipeline = { reqJson, sid, state, opt, forwardBody };

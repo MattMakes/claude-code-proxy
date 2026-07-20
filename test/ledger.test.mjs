@@ -112,6 +112,17 @@ test("all-sessions rollup: session-shaped cumulative view", () => {
   assert.ok(Math.abs(a.cost_without - (a.cost_with + 2000 * 3e-6)) < 1e-12);
 });
 
+test("saved_detail.crush sums; old lines without crush replay fine", () => {
+  const led = createLedger({ dir: fs.mkdtempSync(path.join(os.tmpdir(), "led-")), prices });
+  led.add(entry()); // pre-crush ledger line: no crush key
+  led.add(entry({ saved_detail: { dedup: 100, stale_read: 0, crush: 250 } }));
+  const s = led.stats();
+  const sess = s.sessions.find((x) => x.id === "s1");
+  assert.equal(sess.saved_detail.crush, 250);
+  assert.equal(sess.saved_detail.dedup, 700);
+  assert.equal(s.all.saved_detail.crush, 250);
+});
+
 test("recent entries carry session-scoped bust flags across interleaved sessions", () => {
   const led = createLedger({ dir: fs.mkdtempSync(path.join(os.tmpdir(), "led-")), prices });
   const cold = { input: 200, cache_read: 0, cache_creation: 9000, output: 100 };
