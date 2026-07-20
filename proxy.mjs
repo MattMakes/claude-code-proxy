@@ -33,6 +33,7 @@ import { extractSessionId, sessionState } from "./lib/session.mjs";
 import { createLedger } from "./lib/ledger.mjs";
 import { optimize, commitForward } from "./lib/optimize.mjs";
 import { createSseHub } from "./lib/sse.mjs";
+import { createCcrStore } from "./lib/ccr.mjs";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const UPSTREAM = "api.anthropic.com";
@@ -46,6 +47,7 @@ const PRICES = loadPrices();
 const LEDGER = createLedger({ dir: LOG_DIR, prices: PRICES });
 const replayed = LEDGER.replay();
 const HUB = createSseHub();
+const CCR = createCcrStore();
 
 /** Rough token estimate for display. Real input tokens come from the response
  * usage; this is only for ranking the request before the reply arrives. */
@@ -301,6 +303,18 @@ function handle(req, res) {
     } else {
       res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
       res.end(JSON.stringify({ optimize: OPTIMIZE, ...LEDGER.stats() }));
+    }
+    return;
+  }
+  if (req.method === "GET" && reqPath.startsWith("/ccr/")) {
+    const key = reqPath.slice("/ccr/".length);
+    const text = /^[0-9a-f]{24}$/.test(key) ? CCR.get(key) : null;
+    if (text != null) {
+      res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+      res.end(text);
+    } else {
+      res.writeHead(404, { "content-type": "text/plain" });
+      res.end("expired or unknown — re-run the original tool call");
     }
     return;
   }
