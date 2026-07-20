@@ -82,7 +82,7 @@ function renderSession() {
   SESSION = list.find((s) => s.id === SESSION?.id) ?? DATA.sessions[0];
   const label = (s) => (s.id === "__all__" ? "All sessions" : s.id.slice(0, 12)) + ` · ${s.requests} req · ${usd(s.cost_with)}`;
   const opts = list.map((s) => `<option value="${s.id}" ${s.id===SESSION.id?"selected":""}>${label(s)}</option>`).join("");
-  return `<div style="margin:12px 0"><select onchange="SESSION=(this.value==='__all__'?{...DATA.all,id:'__all__'}:DATA.sessions.find(s=>s.id===this.value));paint()">${opts}</select></div>`
+  return `<div style="margin:12px 0"><select onchange="SESSION=(this.value==='__all__'?{...DATA.all,id:'__all__'}:DATA.sessions.find(s=>s.id===this.value));this.blur();paint()">${opts}</select></div>`
     + gauge(SESSION.cost_with, SESSION.cost_without)
     + `<div class="cards">${card("saved tokens", tok(SESSION.saved_tokens), "save")}
        ${card("dedup / stale", tok(SESSION.saved_detail.dedup)+" / "+tok(SESSION.saved_detail.stale_read))}
@@ -147,6 +147,9 @@ async function csv() {
 function paint() {
   if (!DATA) return;
   $("#mode").textContent = `optimize: ${DATA.optimize ? "ON" : "OFF (projection only)"} · ${DATA.lifetime.requests} requests`;
+  // Live pushes repaint the whole view; don't yank the session picker shut
+  // mid-choice. The next push or poll repaints once it loses focus.
+  if (document.activeElement?.tagName === "SELECT") return;
   $("#view").innerHTML = VIEW === "session" ? renderSession() : VIEW === "lifetime" ? renderLifetime()
     : VIEW === "insights" ? renderInsights() : renderHistory();
 }
