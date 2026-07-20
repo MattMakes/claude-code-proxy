@@ -85,7 +85,7 @@ function renderSession() {
   return `<div style="margin:12px 0"><select onchange="SESSION=(this.value==='__all__'?{...DATA.all,id:'__all__'}:DATA.sessions.find(s=>s.id===this.value));this.blur();paint()">${opts}</select></div>`
     + gauge(SESSION.cost_with, SESSION.cost_without)
     + `<div class="cards">${card("saved tokens", tok(SESSION.saved_tokens), "save")}
-       ${card("dedup / stale", tok(SESSION.saved_detail.dedup)+" / "+tok(SESSION.saved_detail.stale_read))}
+       ${card("dedup / stale / crush", tok(SESSION.saved_detail.dedup)+" / "+tok(SESSION.saved_detail.stale_read)+" / "+tok(SESSION.saved_detail.crush ?? 0))}
        ${card("cache savings (separate)", usd(SESSION.cache_savings), "save")}
        ${card("busts · cost", SESSION.busts+" · "+usd(SESSION.bust_cost))}</div>`
     + tokenSplit(SESSION.tokens) + sparkline(SESSION.recent) + feed(SESSION.recent);
@@ -132,7 +132,14 @@ function renderInsights() {
     <td>${m.model}</td><td>${m.requests}</td><td class="${m.hit_rate>0.5?"hit-hi":"hit-lo"}">${pct(m.hit_rate)}</td>
     <td>${tok(m.tokens.cache_read)}</td><td>${tok(m.tokens.input)}</td><td>${usd(m.cost_with)}</td><td>${usd(m.cost_without)}</td></tr>`).join("")}</table>`
     : "<div class='card'>no model data yet</div>";
-  return cards + toolTable + topTable + modelTable;
+  const rt = DATA.routing ?? { tiers: {}, applied: 0, potential_saved_usd: 0 };
+  const routing = `<div class="legend" style="margin:10px 0">complexity routing — ${DATA.route ? "APPLYING" : "shadow (run with --route to apply)"}</div>
+    <div class="cards">${card("simple / moderate", (rt.tiers.SIMPLE ?? 0) + " / " + (rt.tiers.MODERATE ?? 0))}
+    ${card("complex / reasoning", (rt.tiers.COMPLEX ?? 0) + " / " + (rt.tiers.REASONING ?? 0))}
+    ${card("routed", String(rt.applied ?? 0))}
+    ${card("≈$ if routed", usd(rt.potential_saved_usd ?? 0), "save")}
+    ${card("ccr entries", String(DATA.ccr_entries ?? 0))}</div>`;
+  return cards + toolTable + topTable + modelTable + routing;
 }
 
 async function csv() {
@@ -146,7 +153,7 @@ async function csv() {
 
 function paint() {
   if (!DATA) return;
-  $("#mode").textContent = `optimize: ${DATA.optimize ? "ON" : "OFF (projection only)"} · ${DATA.lifetime.requests} requests`;
+  $("#mode").textContent = `optimize: ${DATA.optimize ? "ON" : "OFF (projection only)"} · routing: ${DATA.route ? "ON" : "shadow"} · ${DATA.lifetime.requests} requests`;
   // Live pushes repaint the whole view; don't yank the session picker shut
   // mid-choice. The next push or poll repaints once it loses focus.
   if (document.activeElement?.tagName === "SELECT") return;

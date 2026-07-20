@@ -151,9 +151,37 @@ node scripts/refresh-prices.mjs
 
 Build-time only — the proxy never fetches anything at runtime.
 
-## Deferred (deliberately not built yet)
+## JSON tool-result crushing (reversible)
 
-- JSON tool-result crushing
-- Complexity-based model routing
-- Prometheus `/metrics`
-- CCR retrieval store
+Large JSON arrays in tool results (≥ 5 items, > 200 est. tokens, delta-only —
+the frozen cache prefix is never touched) are statistically crushed: every
+error-looking item is kept, plus head/tail anchors and 2σ numeric outliers.
+Crushing only ships when it saves ≥ 15%. The original is stored first in the
+CCR store, and the crushed array ends with a marker telling the model exactly
+how to get it back:
+
+```
+[crushed: kept 12 of 250 items — full data: curl -s http://localhost:8787/ccr/<key>]
+```
+
+`GET /ccr/<key>` serves the original for 30 minutes (in-memory, 1000-entry
+cap). After expiry the model can always just re-run the tool.
+
+## Complexity-based model routing (shadow by default)
+
+Every request is scored on LiteLLM's ComplexityRouter dimensions (code 0.30,
+reasoning 0.25, technical 0.25, length 0.10; boundaries 0.15 / 0.35 / 0.60;
+two reasoning markers force the REASONING tier) and the decision is recorded
+in the ledger — but the model is only rewritten when you start the proxy with
+`--route`. Shadow mode exists so the Insights view can show the tier mix and
+`≈$ if routed` **before** you let it touch traffic. When applied: downgrades
+only (SIMPLE → haiku, MODERATE → sonnet, never an upgrade), pinned per
+session so a conversation never flip-flops models (a mid-session swap would
+bust the prompt cache).
+
+## Prometheus `/metrics`
+
+`GET /metrics` renders the ledger aggregates in Prometheus text format
+(`agentproxy_` prefix): requests, token classes, saved tokens per pass,
+cost with/without, cache savings, busts, per-model spend, routing tiers, and
+CCR entries. Point Grafana at it if you want dashboards beyond the built-in.

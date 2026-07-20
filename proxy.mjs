@@ -305,7 +305,7 @@ function handle(req, res) {
       fs.existsSync(LEDGER.file) ? fs.createReadStream(LEDGER.file).pipe(res) : res.end();
     } else {
       res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
-      res.end(JSON.stringify({ optimize: OPTIMIZE, ...LEDGER.stats() }));
+      res.end(JSON.stringify({ optimize: OPTIMIZE, route: ROUTE, ccr_entries: CCR.size(), ...LEDGER.stats() }));
     }
     return;
   }
@@ -425,7 +425,7 @@ function handle(req, res) {
                   tools: estTokens(audit.toolsBytes),
                   messages: estTok(JSON.stringify(reqJson.messages ?? [])),
                   tool_defs: audit.toolRows.slice(0, 15).map((r) => ({ name: r.name, tokens: r.tokens })) } });
-              HUB.broadcast({ optimize: OPTIMIZE, ...LEDGER.stats() });
+              HUB.broadcast({ optimize: OPTIMIZE, route: ROUTE, ccr_entries: CCR.size(), ...LEDGER.stats() });
             }
           } catch (err) {
             console.error(`[agent-proxy] could not render (non-JSON body?): ${err.message}`);
