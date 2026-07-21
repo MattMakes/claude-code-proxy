@@ -85,7 +85,7 @@ function renderSession() {
   return `<div style="margin:12px 0"><select onchange="SESSION=(this.value==='__all__'?{...DATA.all,id:'__all__'}:DATA.sessions.find(s=>s.id===this.value));this.blur();paint()">${opts}</select></div>`
     + gauge(SESSION.cost_with, SESSION.cost_without)
     + `<div class="cards">${card("saved tokens", tok(SESSION.saved_tokens), "save")}
-       ${card("dedup / stale / crush", tok(SESSION.saved_detail.dedup)+" / "+tok(SESSION.saved_detail.stale_read)+" / "+tok(SESSION.saved_detail.crush ?? 0))}
+       ${card("dedup / stale / crush / mature", tok(SESSION.saved_detail.dedup)+" / "+tok(SESSION.saved_detail.stale_read)+" / "+tok((SESSION.saved_detail.crush ?? 0)+(SESSION.saved_detail.crush_text ?? 0))+" / "+tok(SESSION.saved_detail.mature ?? 0))}
        ${card("cache savings (separate)", usd(SESSION.cache_savings), "save")}
        ${card("busts · cost", SESSION.busts+" · "+usd(SESSION.bust_cost))}</div>`
     + tokenSplit(SESSION.tokens) + sparkline(SESSION.recent) + feed(SESSION.recent);

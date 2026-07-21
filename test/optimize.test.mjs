@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { optimize, commitForward } from "../lib/optimize.mjs";
+import { optimize, commitForward, CACHE_TTL_MS } from "../lib/optimize.mjs";
+import { createCcrStore } from "../lib/ccr.mjs";
 
 const BIG = ("line of tool output that is long enough\n").repeat(40); // ~1.5KB, >3 lines
 const PAD = "x".repeat(9000); // pushes request over the 2000-token floor
@@ -76,6 +77,58 @@ test("stale Read in FROZEN prefix: untouched on cache hit, stubbed on cache miss
   const again2 = structuredClone(f2.body); again2.messages.push({ role: "user", content: "next" });
   const out3 = optimize(again2, cold, { apply: true });
   assert.ok(out3.savedDetail.stale_read >= 0); // gate open; frozen stub permitted
+});
+
+test("TTL lapse opens the frozen-prefix gate: stale read stubbed despite hot cache", () => {
+  const state = freshState();
+  const first = req([readUse("u1", "/a.txt"), toolResult("u1", BIG)]);
+  const out1 = optimize(first, state, { apply: true });
+  assert.equal(out1.applied, false); // nothing to do yet
+  commitForward(state, first, { input: 10, cache_read: 90000, cache_creation: 5, output: 5 }, () => 1000);
+  const second = structuredClone(first);
+  second.messages.push(editUse("u2", "/a.txt"), toolResult("u2", "ok\nok\nok\nedited fine result"));
+
+  // Within TTL, cache hot → frozen read untouched.
+  const warm = optimize(structuredClone(second), state, { apply: true, now: () => 1000 + 60_000 });
+  assert.equal(warm.savedDetail.stale_read, 0);
+
+  // Past TTL the cache entry is dead — compaction is free.
+  const lapsed = optimize(second, state, { apply: true, now: () => 1000 + CACHE_TTL_MS + 1 });
+  assert.ok(lapsed.savedDetail.stale_read > 0);
+  assert.match(lapsed.body.messages[1].content[0].content, /stale Read of \/a\.txt/);
+  assert.equal(lapsed.cache.ttlLapsed, true);
+});
+
+test("stale stub references the FIRST superseding access — later touches don't move it", () => {
+  const base = [readUse("u1", "/a.txt"), toolResult("u1", BIG),
+    editUse("u2", "/a.txt"), toolResult("u2", "ok\nok\nok\nedited fine result")];
+  const out1 = optimize(req(structuredClone(base)), freshState(), { apply: true });
+  const more = structuredClone(base);
+  more.push(editUse("u3", "/a.txt"), toolResult("u3", "ok\nok\nok\nedited more"));
+  const out2 = optimize(req(more), freshState(), { apply: true });
+  assert.equal(out2.body.messages[1].content[0].content,
+    out1.body.messages[1].content[0].content); // byte-stable across new touches
+});
+
+const BIGREAD = ("a long unique-ish line of file content for the maturation test\n").repeat(50);
+const chat = (n) => Array.from({ length: n }, () => ({ role: "assistant", content: "acknowledged" }));
+
+test("read maturation via optimize: held while active, matured after quiesce", () => {
+  const ccr = createCcrStore();
+  const o = { apply: true, ccr, ccrUrl: "http://x/ccr", sid: "s1" };
+
+  const held = req([readUse("u1", "/a.txt"), toolResult("u1", BIGREAD)]);
+  held.messages[1].content[0].cache_control = { type: "ephemeral" };
+  const outHeld = optimize(held, freshState(), o);
+  assert.equal(outHeld.applied, true); // relocation alone forces the draft out
+  assert.equal(outHeld.body.messages[1].content[0].content, BIGREAD); // verbatim
+  assert.equal(outHeld.body.messages[1].content[0].cache_control, undefined); // held out of cache
+  assert.deepEqual(outHeld.body.messages[0].content[0].cache_control, { type: "ephemeral" }); // parked before
+
+  const quiet = req([readUse("u1", "/a.txt"), toolResult("u1", BIGREAD), ...chat(5)]);
+  const outQuiet = optimize(quiet, freshState(), o);
+  assert.ok(outQuiet.savedDetail.mature > 0);
+  assert.match(outQuiet.body.messages[1].content[0].content, /^\[Read of \/a\.txt compressed after quiesce/);
 });
 
 test("small (<512B) stale reads untouched", () => {

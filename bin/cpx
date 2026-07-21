@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# cpx - launch Claude Code through the claude-code-proxy measuring proxy.
+#
+# Auto-starts the proxy on CPX_PORT (default 8787) if it isn't already up,
+# waits until the listener is confirmed live, then execs `claude` with the
+# transparent-passthrough env the proxy needs. All arguments pass straight
+# through, so `cpx --model X "prompt"` behaves exactly like the same `claude`
+# invocation, just measured. Dashboard: http://127.0.0.1:<port>/dashboard
+#
+# Must stay bash-3.2 compatible (macOS stock bash).
+set -euo pipefail
+
+CPX_PORT="${CPX_PORT:-8787}"
+PROXY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LOG="${TMPDIR:-/tmp}/cpx-proxy-${CPX_PORT}.log"
+
+# Is *our* proxy answering on the port? /metrics carries the agentproxy_
+# prefix, which fingerprints this proxy specifically - a different proxy
+# holding the port won't match, so we never route through the wrong one.
+cpx_healthy() {
+    curl -sf "http://127.0.0.1:${CPX_PORT}/metrics" 2>/dev/null | grep -q agentproxy_
+}
+
+if ! cpx_healthy; then
+    # Race-safe cold start: the orchestration recipes fire several `cpx` panes
+    # within milliseconds, so more than one may find the proxy down and try to
+    # start it. All but one lose the port bind (EADDRINUSE) and exit harmlessly
+    # into the log; everyone then polls until the winner's listener is live
+    # before proceeding, so no pane ever execs claude against a dead port.
+    PORT="$CPX_PORT" nohup node "$PROXY_DIR/proxy.mjs" >>"$LOG" 2>&1 &
+    for _ in $(seq 1 50); do
+        cpx_healthy && break
+        sleep 0.2
+    done
+    if ! cpx_healthy; then
+        echo "cpx: proxy did not become healthy on :${CPX_PORT} (see $LOG)" >&2
+        exit 1
+    fi
+fi
+
+# Explicit 127.0.0.1 (not localhost) avoids the IPv4/IPv6 dual-stack ambiguity;
+# the proxy binds 127.0.0.1 by default. See the proxy README for why the two
+# CLAUDE_CODE flags are needed for an honest transparent passthrough.
+export ANTHROPIC_BASE_URL="http://127.0.0.1:${CPX_PORT}"
+export _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+exec claude "$@"

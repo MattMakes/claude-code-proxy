@@ -33,6 +33,16 @@ test("insertion-order eviction when over max", () => {
   assert.equal(ccr.get(k3), "third");
 });
 
+test("session scope: same text in different sessions → distinct keys", () => {
+  const ccr = createCcrStore();
+  const k1 = ccr.put("shared content", "session-a");
+  const k2 = ccr.put("shared content", "session-b");
+  assert.notEqual(k1, k2);
+  assert.equal(ccr.get(k1), "shared content");
+  assert.equal(ccr.get(k2), "shared content");
+  assert.equal(ccr.size(), 2);
+});
+
 test("unknown key reads null", () => {
   const ccr = createCcrStore();
   assert.equal(ccr.get("0".repeat(24)), null);

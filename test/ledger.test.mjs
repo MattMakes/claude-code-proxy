@@ -123,6 +123,26 @@ test("saved_detail.crush sums; old lines without crush replay fine", () => {
   assert.equal(s.all.saved_detail.crush, 250);
 });
 
+test("saved_detail crush_text + mature sum; old lines without them replay fine", () => {
+  const led = createLedger({ dir: fs.mkdtempSync(path.join(os.tmpdir(), "led-")), prices });
+  led.add(entry()); // old line: no crush_text/mature keys
+  led.add(entry({ saved_detail: { dedup: 0, stale_read: 0, crush: 0, crush_text: 120, mature: 500 } }));
+  const sess = led.stats().sessions.find((x) => x.id === "s1");
+  assert.equal(sess.saved_detail.crush_text, 120);
+  assert.equal(sess.saved_detail.mature, 500);
+});
+
+test("cache_miss reasons counted; hits, cold starts and old lines ignored", () => {
+  const led = createLedger({ dir: fs.mkdtempSync(path.join(os.tmpdir(), "led-")), prices });
+  led.add(entry()); // old line without cache_miss
+  led.add(entry({ cache_miss: { is_miss: false, reason: "hit" } }));
+  led.add(entry({ cache_miss: { is_miss: false, reason: "cold_start" } }));
+  led.add(entry({ cache_miss: { is_miss: true, reason: "ttl_expiry" } }));
+  led.add(entry({ cache_miss: { is_miss: true, reason: "prefix_change" } }));
+  led.add(entry({ cache_miss: { is_miss: true, reason: "ttl_expiry" } }));
+  assert.deepEqual(led.stats().cache_misses, { ttl_expiry: 2, prefix_change: 1, unknown: 0 });
+});
+
 test("routing aggregate: tiers counted, potential accrues only when target differs", () => {
   const haiku = { input_cost_per_token: 1e-6, output_cost_per_token: 5e-6,
     cache_read_input_token_cost: 1e-7, cache_creation_input_token_cost: 1.25e-6 };

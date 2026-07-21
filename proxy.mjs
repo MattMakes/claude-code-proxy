@@ -370,12 +370,13 @@ function handle(req, res) {
         }
         let opt;
         try {
-          opt = optimize(reqJson, state, { apply: OPTIMIZE, ccr: CCR, ccrUrl: `http://localhost:${PORT}/ccr` });
+          opt = optimize(reqJson, state, { apply: OPTIMIZE, ccr: CCR, ccrUrl: `http://localhost:${PORT}/ccr`, sid });
         } catch (err) {
           console.error(`[agent-proxy] optimizer error (forwarding original): ${err.message}`);
           opt = { body: reqJson, originalTokens: estTok(body.toString("utf8")),
             optimizedTokens: estTok(body.toString("utf8")),
-            savedDetail: { dedup: 0, stale_read: 0, crush: 0 }, applied: false };
+            savedDetail: { dedup: 0, stale_read: 0, crush: 0, crush_text: 0, mature: 0 },
+            applied: false, cache: null };
         }
         // A routed model must reach the wire even when the optimizer didn't
         // fire — opt.body is reqJson (already rewritten) in that case.
@@ -410,10 +411,22 @@ function handle(req, res) {
               // (prefix hash, span memory) stays truthful in both modes.
               if ((up.statusCode ?? 0) < 500) commitForward(state, opt.applied ? opt.body : pipeline.reqJson, usageSplit);
               else if (usageSplit) state.lastUsage = usageSplit;
+              // Attribute this turn's cache outcome (headroom's prefix-tracker
+              // classification): expected-hit-but-missed → TTL lapse beats a
+              // coincident prefix change; a stable prefix within TTL is
+              // provider-side ("unknown").
+              let cacheMiss = null;
+              if (usageSplit && opt.cache) {
+                if (opt.cache.expectedCached < 1024) cacheMiss = { is_miss: false, reason: "cold_start" };
+                else if (usageSplit.cache_read > 0) cacheMiss = { is_miss: false, reason: "hit" };
+                else cacheMiss = { is_miss: true, reason: opt.cache.ttlLapsed ? "ttl_expiry"
+                  : !opt.cache.forwardedStable ? "prefix_change" : "unknown" };
+              }
               LEDGER.append({ ts: timestamp, session: sid, model: pipeline.reqJson?.model ?? "unknown",
                 original_tokens: opt.originalTokens, optimized_tokens: opt.optimizedTokens,
                 saved_tokens: opt.originalTokens - opt.optimizedTokens,
                 saved_detail: opt.savedDetail, applied: opt.applied,
+                ...(cacheMiss && { cache_miss: cacheMiss }),
                 // Routing decision; when applied, `model` above is the routed
                 // model and route.from keeps the original.
                 ...(pipeline.route && { route: pipeline.route }),

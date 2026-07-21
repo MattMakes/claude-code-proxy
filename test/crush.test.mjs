@@ -11,7 +11,7 @@ const rows = (n) => Array.from({ length: n }, (_, i) => row(i));
 const toolResult = (id, text) => ({ role: "user", content: [{ type: "tool_result", tool_use_id: id, content: text }] });
 const req = (messages) => ({ model: "claude-sonnet-5", system: PAD, messages });
 const freshState = () => ({ spans: new Map(), pendingSpans: null, forwardedCount: 0, forwardedPrefixHash: null, lastUsage: null });
-const saved = () => ({ dedup: 0, stale_read: 0, crush: 0 });
+const saved = () => ({ dedup: 0, stale_read: 0, crush: 0, crush_text: 0, mature: 0 });
 const run = (text) => {
   const msgs = [toolResult("t1", text)];
   const s = saved();
@@ -94,6 +94,55 @@ test("optimize wiring: crush applied in delta; skipped entirely without ccr", ()
   const bare = optimize(req([toolResult("t1", text)]), freshState(), { apply: true });
   assert.equal(bare.savedDetail.crush, 0);
   assert.equal(bare.body.messages[0].content[0].content, text);
+});
+
+const bashUse = (id) => ({ role: "assistant",
+  content: [{ type: "tool_use", id, name: "Bash", input: { command: "make build" } }] });
+const readUse = (id) => ({ role: "assistant",
+  content: [{ type: "tool_use", id, name: "Read", input: { file_path: "/a.txt" } }] });
+
+test("repetitive Bash output crushed by adaptive line count; CCR roundtrip", () => {
+  const text = Array.from({ length: 60 }, (_, i) =>
+    `compiling module number ${i % 3} with the same repeated flags and output`).join("\n");
+  const msgs = [bashUse("b1"), toolResult("b1", text)];
+  const s = saved();
+  const ccr = createCcrStore();
+  crushPass(msgs, 0, s, { ccr, ccrUrl: CCR_URL });
+  const out = msgs[1].content[0].content;
+  assert.ok(s.crush_text > 0);
+  const marker = out.split("\n").at(-1);
+  assert.match(marker, /^\[crushed: kept \d+ of 60 lines — full output: curl -s http:\/\/x\/ccr\/[0-9a-f]{24}\]$/);
+  assert.equal(ccr.get(marker.match(/\/ccr\/([0-9a-f]{24})\]$/)[1]), text);
+});
+
+test("error lines and the tail survive text crushing", () => {
+  const lines = Array.from({ length: 50 }, (_, i) => `same build noise repeated over and over ${i % 2}`);
+  lines[30] = "error: linker exploded spectacularly";
+  const msgs = [bashUse("b1"), toolResult("b1", lines.join("\n"))];
+  crushPass(msgs, 0, saved(), { ccr: createCcrStore(), ccrUrl: CCR_URL });
+  const kept = msgs[1].content[0].content.split("\n");
+  assert.ok(kept.includes("error: linker exploded spectacularly"));
+  assert.ok(kept.includes(lines[49])); // tail anchor
+});
+
+test("text crush skips: unique content, file-tool results, unattributed results", () => {
+  const w = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"];
+  const unique = Array.from({ length: 40 }, (_, i) =>
+    `${w[i % 8]} ${w[(i * 3 + 1) % 8]} distinct entry ${i} value ${i * i} token ${i * 7}`).join("\n");
+  const u = [bashUse("b1"), toolResult("b1", unique)];
+  const su = saved();
+  crushPass(u, 0, su, { ccr: createCcrStore(), ccrUrl: CCR_URL });
+  assert.equal(u[1].content[0].content, unique); // dense content untouched
+  assert.equal(su.crush_text, 0);
+
+  const noise = Array.from({ length: 60 }, () => "identical repeated log line every time").join("\n");
+  const r = [readUse("r1"), toolResult("r1", noise)];
+  crushPass(r, 0, saved(), { ccr: createCcrStore(), ccrUrl: CCR_URL });
+  assert.equal(r[1].content[0].content, noise); // Read belongs to maturation
+
+  const orphan = [toolResult("x1", noise)];
+  crushPass(orphan, 0, saved(), { ccr: createCcrStore(), ccrUrl: CCR_URL });
+  assert.equal(orphan[0].content[0].content, noise); // can't attribute → skip
 });
 
 test("frozen-prefix candidate untouched on cache-hot path", () => {

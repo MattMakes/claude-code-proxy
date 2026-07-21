@@ -6,7 +6,9 @@ const stats = {
   lifetime: { requests: 42, saved_tokens: 1234, cost_with: 1.5, cost_without: 2.25,
     cache_savings: 0.75 },
   all: { tokens: { input: 100, cache_read: 2000, cache_creation: 300, output: 50 },
-    saved_detail: { dedup: 600, stale_read: 400, crush: 234 }, busts: 3, bust_cost: 0.12 },
+    saved_detail: { dedup: 600, stale_read: 400, crush: 234, crush_text: 55, mature: 78 },
+    busts: 3, bust_cost: 0.12 },
+  cache_misses: { ttl_expiry: 4, prefix_change: 2, unknown: 1 },
   sessions: [{ id: "s1" }, { id: "s2" }],
   by_model: [
     { model: 'claude-"weird"-5', requests: 40, cost_with: 1.4 },
@@ -25,6 +27,10 @@ test("renders HELP/TYPE per family and exact sample values", () => {
   assert.match(out, /^agentproxy_tokens_total\{class="output"\} 50$/m);
   assert.match(out, /^agentproxy_saved_tokens_total\{pass="dedup"\} 600$/m);
   assert.match(out, /^agentproxy_saved_tokens_total\{pass="crush"\} 234$/m);
+  assert.match(out, /^agentproxy_saved_tokens_total\{pass="crush_text"\} 55$/m);
+  assert.match(out, /^agentproxy_saved_tokens_total\{pass="mature"\} 78$/m);
+  assert.match(out, /^agentproxy_cache_miss_total\{reason="ttl_expiry"\} 4$/m);
+  assert.match(out, /^agentproxy_cache_miss_total\{reason="unknown"\} 1$/m);
   assert.match(out, /^agentproxy_cost_usd_total 1\.5$/m);
   assert.match(out, /^agentproxy_cost_without_usd_total 2\.25$/m);
   assert.match(out, /^agentproxy_cache_savings_usd_total 0\.75$/m);
@@ -54,6 +60,7 @@ test("missing routing/ccr/all fields render zeros — never NaN", () => {
   assert.match(out, /^agentproxy_requests_total 0$/m);
   assert.match(out, /^agentproxy_tokens_total\{class="input"\} 0$/m);
   assert.match(out, /^agentproxy_saved_tokens_total\{pass="stale_read"\} 0$/m);
+  assert.match(out, /^agentproxy_cache_miss_total\{reason="ttl_expiry"\} 0$/m);
   assert.match(out, /^agentproxy_route_tier_total\{tier="SIMPLE"\} 0$/m);
   assert.match(out, /^agentproxy_route_applied_total 0$/m);
   assert.match(out, /^agentproxy_route_potential_saved_usd 0$/m);
